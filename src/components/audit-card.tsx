@@ -4,14 +4,31 @@ import { completedCount } from "@/lib/workflow";
 import { CHECK_COUNT } from "@/lib/checks";
 import { formatDate, hostOf } from "@/lib/format";
 
+const STICKY_COLORS = ["yellow", "pink", "green", "blue", "orange", "violet"] as const;
+
+function hash(s: string) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
 export function AuditCard({ audit }: { audit: BoardAudit }) {
+  const h = hash(audit.clientName || audit.siteName);
+  const color = STICKY_COLORS[h % STICKY_COLORS.length];
+  const rotation = ((hash(audit.id) % 7) - 3) * 0.45;
   const done = completedCount(audit.checks);
   const failing = audit.checks.filter((c) => c.status === "FAIL").length;
   const retest = audit.checks.filter((c) => c.status === "RETEST").length;
   const pct = Math.round((done / CHECK_COUNT) * 100);
 
   return (
-    <Link href={`/audits/${audit.id}`} className="card" data-testid="audit-card" data-site={audit.siteName}>
+    <Link
+      href={`/audits/${audit.id}`}
+      className={`card sticky-${color}`}
+      style={{ "--rot": `${rotation}deg` } as React.CSSProperties}
+      data-testid="audit-card"
+      data-site={audit.siteName}
+    >
       <div className="card-top">
         <span className="card-title">{audit.siteName}</span>
         <span className="mono muted small">

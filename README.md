@@ -12,10 +12,17 @@ Technical PM audits. Bree approves.
 - **Coming soon** items with their verified reason, shown on the card and in the sign-off.
 - **History**: approved audits with the full checklist, dates, approver and comments; search + filter by client and approval date.
 - **Guide**: the source guide rendered in-app.
-- **Audit prompt**: a master prompt for Lovable (top bar, and prefilled with site name + URL in each audit) with a
-  Copy button. Paste it into the site's Lovable project: Lovable audits the whole site without changing code and
-  returns Markdown tables that map 1:1 to the app's coverage log, check fields, "coming soon" items and verdict.
-  Generated in [`src/lib/audit-prompt.ts`](src/lib/audit-prompt.ts) from the same check definitions.
+- **Audit prompt** (top bar, and in each audit with `Site:` / `URL:` prepended): a short prompt to paste into the
+  site's Lovable project, with a Copy button. Text lives in [`src/lib/audit-prompt.ts`](src/lib/audit-prompt.ts).
+- **Audit chat** (bottom-right): no LLM, no API key — a rule-based parser in [`src/lib/chat/`](src/lib/chat/).
+  - Paste the Lovable result (`01 … PASS/FAIL … what's wrong`, also Markdown tables). It sets Desktop/Mobile and
+    status per check (`FAIL (mobile only)` or `Desktop: PASS, Mobile: FAIL` are understood), puts "what's wrong" in the
+    notes, adds check 12 items to *Coming soon* (with their page as the reason), and the card moves automatically
+    (all pass → Ready for Bree, any fail → Fix & retest). The site comes from `Site:`/`URL:` lines, a site name in the
+    text, or the audit currently open.
+  - Commands: `create audit Acme https://acme.com client Acme pm Alex` · `mark 04 fail mobile: dosing in FAQ` ·
+    `mark 01-12 pass` · `move Acme to fix & retest` · `approve Acme: looks good` / `mark Acme done` (Approver role) ·
+    `help`. Every action is confirmed in the chat.
 
 All check text comes verbatim from the guide in [`src/lib/checks.ts`](src/lib/checks.ts).
 

@@ -4,6 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { RoleProvider } from "@/components/role-provider";
 import { Header } from "@/components/header";
+import { ChatPanel } from "@/components/chat-panel";
 import { getInbox } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <RoleProvider>
           <Header inbox={inbox} />
           <main className="main">{children}</main>
+          <ChatPanel />
         </RoleProvider>
       </body>
     </html>
