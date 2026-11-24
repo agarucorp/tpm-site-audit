@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+enum AuditStage {
+  IN_AUDIT
+  FIX_RETEST
+  READY_FOR_BREE
+  APPROVED
+}
+
+enum CheckStatus {
+  PENDING
+  FAIL
+  RETEST
+  PASS
+}
+
+enum ActorRole {
+  PM
+  APPROVER
+}
+
+enum EventType {
+  CREATED
+  STAGE_CHANGED
+  CHANGES_REQUESTED
+  RESUBMITTED
+  APPROVED
+}
+
+model Audit {
+  id               String     @id @default(cuid())
+  siteName         String
+  clientName       String
+  url              String
+  auditDate        DateTime
+  assignedPm       String
+  stage            AuditStage @default(IN_AUDIT)
+  // Set when the approver requests changes; cleared when the PM resubmits.
+  changesRequested Boolean    @default(false)
+  submittedAt      DateTime?
+  approvedAt       DateTime?
+  approvedBy       String?
+  approvalComment  String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  checks     CheckResult[]
+  coverage   CoverageItem[]
+  comingSoon ComingSoonItem[]
+  events     AuditEvent[]
+
+  @@index([stage])
+  @@index([clientName])
+}
+
+model CheckResult {
+  id              String      @id @default(cuid())
+  auditId         String
+  checkNumber     Int
+  desktopPass     Boolean     @default(false)
+  mobilePass      Boolean     @default(false)
+  status          CheckStatus @default(PENDING)
+  notes           String      @default("")
+  owner           String      @default("")
+  screenshotLinks String[]    @default([])
+  retestResult    String      @default("")
+  updatedAt       DateTime    @updatedAt
+
+  audit Audit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, checkNumber])
+}
+
+model CoverageItem {
+  id            String   @id @default(cuid())
+  auditId       String
+  page          String
+  element       String
+  desktopTested Boolean  @default(false)
+  mobileTested  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  audit Audit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+}
+
+model ComingSoonItem {
+  id        String   @id @default(cuid())
+  auditId   String
+  product   String
+  reason    String   @default("")
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  audit Audit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+}
+
+model AuditEvent {
+  id        String      @id @default(cuid())
+  auditId   String
+  type      EventType
+  actorName String
+  actorRole ActorRole
+  comment   String      @default("")
+  fromStage AuditStage?
+  toStage   AuditStage?
+  createdAt DateTime    @default(now())
+
+  audit Audit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId, createdAt])
+}
