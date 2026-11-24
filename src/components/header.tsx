@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Inbox } from "@/lib/queries";
 import { useRole } from "./role-provider";
 import { formatDate } from "@/lib/format";
+import { AuditPromptButton } from "./audit-prompt";
 
 export function Header({ inbox }: { inbox: Inbox }) {
   const pathname = usePathname();
@@ -51,6 +52,7 @@ export function Header({ inbox }: { inbox: Inbox }) {
       </div>
 
       <div className="topbar-right">
+        <AuditPromptButton variant="topbar" />
         <div className="inbox" ref={panelRef}>
           <button
             className={`inbox-btn ${count > 0 ? "has-items" : ""}`}

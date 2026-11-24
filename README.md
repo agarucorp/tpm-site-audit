@@ -12,6 +12,10 @@ Technical PM audits. Bree approves.
 - **Coming soon** items with their verified reason, shown on the card and in the sign-off.
 - **History**: approved audits with the full checklist, dates, approver and comments; search + filter by client and approval date.
 - **Guide**: the source guide rendered in-app.
+- **Audit prompt**: a master prompt for Lovable (top bar, and prefilled with site name + URL in each audit) with a
+  Copy button. Paste it into the site's Lovable project: Lovable audits the whole site without changing code and
+  returns Markdown tables that map 1:1 to the app's coverage log, check fields, "coming soon" items and verdict.
+  Generated in [`src/lib/audit-prompt.ts`](src/lib/audit-prompt.ts) from the same check definitions.
 
 All check text comes verbatim from the guide in [`src/lib/checks.ts`](src/lib/checks.ts).
 

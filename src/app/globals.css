@@ -180,6 +180,11 @@ textarea.input { resize: vertical; min-height: 34px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
 .modal-body { padding: 14px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border); }
+.modal-foot.spread { justify-content: space-between; align-items: center; }
+.modal-wide { width: 880px; }
+.prompt-body { display: flex; flex-direction: column; gap: 12px; }
+.prompt-help { margin: 0; }
+.prompt-text { height: min(56vh, 560px); resize: none; font-size: 11.5px; line-height: 1.55; background: var(--bg); white-space: pre-wrap; overflow: auto; font-family: var(--font-mono); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-grid label, .check-details label { display: flex; flex-direction: column; gap: 5px; }
 .form-grid label > span, .check-details label > span, .field-label { font-size: 11.5px; color: var(--muted); }
