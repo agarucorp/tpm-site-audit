@@ -62,9 +62,10 @@ try {
   // Global audit prompt
   await page.getByTestId("audit-prompt-global").click();
   const globalPrompt = await page.getByTestId("prompt-text").inputValue();
-  if (!globalPrompt.includes("[SITE NAME]") || (globalPrompt.match(/^### \d{2} — /gm) ?? []).length !== 12)
-    throw new Error("Global prompt should have placeholders and 12 check sections");
-  if (!globalPrompt.includes("Do NOT change")) throw new Error("Prompt must say audit only");
+  if (!globalPrompt.startsWith("Perform a full site audit following these 12 checks"))
+    throw new Error("Global prompt must start with the audit instruction");
+  if ((globalPrompt.match(/^(0[1-9]|1[0-2]) /gm) ?? []).length !== 12) throw new Error("Prompt must list 12 checks");
+  if (!globalPrompt.includes("Do not change anything.")) throw new Error("Prompt must say audit only");
   await page.getByTestId("prompt-copy").click();
   await page.getByText("Copied ✓").waitFor();
   if ((await page.evaluate(() => navigator.clipboard.readText())) !== globalPrompt) throw new Error("Clipboard mismatch");
@@ -83,7 +84,7 @@ try {
 
   await page.getByTestId("audit-prompt-detail").click();
   const detailPrompt = await page.getByTestId("prompt-text").inputValue();
-  if (!detailPrompt.includes(`Site name: ${site}`) || !detailPrompt.includes("URL: https://testclinic.example.com"))
+  if (!detailPrompt.startsWith(`Site: ${site}\nURL: https://testclinic.example.com\n\nPerform a full site audit`))
     throw new Error("Detail prompt should be prefilled with site name and URL");
   await page.keyboard.press("Escape");
   log("detail audit prompt prefilled with site name + URL");
@@ -230,7 +231,73 @@ try {
   await page.getByTestId("audit-prompt-modal").waitFor();
   await page.screenshot({ path: `${OUT}/audit-prompt-modal.png` });
   await page.keyboard.press("Escape");
+
+  // Chat: paste a Lovable result into the open audit (Lumina, no site named)
+  await page.getByTestId("chat-open").click();
+  const report = [
+    "01 Buttons + CTAs: PASS — all buttons, menus, footer links, forms and checkout steps reach the right page. 100% coverage.",
+    "02 Homepage continuity: PASS",
+    "03 Product packaging: PASS",
+    "04 No dosing information: FAIL — /faq, accordion \"How much do I take?\" shows 0.25mg (mobile only).",
+    "05 Durations + checkout: PASS",
+    "06 Checkout confirmation: PASS",
+    "07 HRT intake first: PASS",
+    "08 Labs: PASS",
+    "09 LegitScript: PASS",
+    "10 Business details + legal: PASS",
+    "11 Imagery: PASS",
+    "12 Coming soon: PASS",
+    "- Tirzepatide — /weight-loss",
+    "- NAD+ injections — /wellness",
+  ].join("\n");
+  await page.getByTestId("chat-input").fill(report);
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("applied 12 check(s)").waitFor();
+  await until(
+    async () =>
+      (await page.getByTestId("check-04-status").inputValue()) === "FAIL" &&
+      (await page.getByTestId("check-04-desktop").isChecked()) &&
+      !(await page.getByTestId("check-04-mobile").isChecked()) &&
+      (await page.getByTestId("check-09-status").inputValue()) === "PASS",
+    "chat: 04 desktop pass / mobile fail, 09 pass",
+  );
+  await waitStage("FIX_RETEST");
+  log("chat: pasted report applied to open audit (04 fails on mobile only, others pass)");
+
+  await page.getByTestId("chat-input").fill("mark 04 pass");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Fix & retest → Ready for Bree").waitFor();
+  await waitStage("READY_FOR_BREE");
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: `${OUT}/chat.png` });
+  log("chat: 'mark 04 pass' -> all complete -> Ready for Bree");
+
+  await page.getByTestId("chat-input").fill("create audit Chat Clinic https://chatclinic.example.com client Chat Co");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Created audit Chat Clinic").waitFor();
+  await page.getByTestId("chat-input").fill("mark 03 fail desktop: vial shown for a cream on Chat Clinic");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Card moved: Chat Clinic — In audit → Fix & retest").waitFor();
+  await page.getByTestId("chat-input").fill("move Chat Clinic to in audit");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Chat Clinic: Fix & retest → In audit").waitFor();
+  log("chat: create audit, mark check on named site, move card");
+
+  await setRole("APPROVER", "Bree");
+  await page.getByTestId("chat-input").fill("approve Lumina Wellness: verified via chat");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Lumina Wellness approved by Bree").waitFor();
+  await waitStage("APPROVED");
+  log("chat: approver 'approve <site>' -> Approved");
+  await setRole("PM", "Alex Rivera");
+  await page.getByTestId("chat-input").fill("mark 04 fail mobile: dosing table still in FAQ image");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("approved and read-only").waitFor();
   await page.goto(BASE);
+  await page.getByTestId("chat-input").fill("help");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("Commands:").waitFor();
+  await page.locator(".chat .icon-btn").click();
   await page.screenshot({ path: `${OUT}/board.png` });
 
   console.log("\nE2E PASSED");
