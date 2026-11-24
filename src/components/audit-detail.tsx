@@ -22,6 +22,7 @@ import { CoverageSection } from "./coverage-section";
 import { ComingSoonSection } from "./coming-soon-section";
 import { SignoffPanel } from "./signoff-panel";
 import { Activity } from "./activity";
+import { AuditPromptButton } from "./audit-prompt";
 
 export function AuditDetail({ audit }: { audit: FullAudit }) {
   const { isPm } = useRole();
@@ -58,13 +59,14 @@ export function AuditDetail({ audit }: { audit: FullAudit }) {
             {STAGE_LABEL[audit.stage]}
           </span>
         </div>
-        {editable && !editing && (
-          <div className="btn-row">
+        <div className="btn-row">
+          <AuditPromptButton siteName={audit.siteName} url={audit.url} />
+          {editable && !editing && (
             <button className="btn" onClick={() => setEditing(true)}>
               Edit details
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {editing ? (

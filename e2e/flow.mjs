@@ -22,7 +22,9 @@ async function until(fn, msg, timeout = 10000) {
 }
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1480, height: 1000 }, deviceScaleFactor: 2 });
+const context = await browser.newContext({ viewport: { width: 1480, height: 1000 }, deviceScaleFactor: 2 });
+await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
+const page = await context.newPage();
 page.on("pageerror", (e) => console.error("PAGE ERROR", e));
 
 const stage = () => page.getByTestId("audit-detail").getAttribute("data-stage");
@@ -57,6 +59,18 @@ try {
   await page.screenshot({ path: `${OUT}/board.png` });
   log("board loaded");
 
+  // Global audit prompt
+  await page.getByTestId("audit-prompt-global").click();
+  const globalPrompt = await page.getByTestId("prompt-text").inputValue();
+  if (!globalPrompt.includes("[SITE NAME]") || (globalPrompt.match(/^### \d{2} — /gm) ?? []).length !== 12)
+    throw new Error("Global prompt should have placeholders and 12 check sections");
+  if (!globalPrompt.includes("Do NOT change")) throw new Error("Prompt must say audit only");
+  await page.getByTestId("prompt-copy").click();
+  await page.getByText("Copied ✓").waitFor();
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== globalPrompt) throw new Error("Clipboard mismatch");
+  await page.keyboard.press("Escape");
+  log("global audit prompt: 12 checks, audit-only, copied to clipboard");
+
   // Create
   await page.getByTestId("new-audit").click();
   await page.locator('input[name="siteName"]').fill(site);
@@ -66,6 +80,13 @@ try {
   await page.waitForURL(/\/audits\//);
   await waitStage("IN_AUDIT");
   log("audit created in In audit");
+
+  await page.getByTestId("audit-prompt-detail").click();
+  const detailPrompt = await page.getByTestId("prompt-text").inputValue();
+  if (!detailPrompt.includes(`Site name: ${site}`) || !detailPrompt.includes("URL: https://testclinic.example.com"))
+    throw new Error("Detail prompt should be prefilled with site name and URL");
+  await page.keyboard.press("Escape");
+  log("detail audit prompt prefilled with site name + URL");
 
   // Guard: Pass without both devices is rejected
   await page.getByTestId("check-02-status").selectOption("PASS");
@@ -205,6 +226,10 @@ try {
   await page.getByTestId("audit-card").filter({ hasText: "Lumina Wellness" }).click();
   await page.getByTestId("audit-detail").waitFor();
   await page.screenshot({ path: `${OUT}/audit-detail.png` });
+  await page.getByTestId("audit-prompt-detail").click();
+  await page.getByTestId("audit-prompt-modal").waitFor();
+  await page.screenshot({ path: `${OUT}/audit-prompt-modal.png` });
+  await page.keyboard.press("Escape");
   await page.goto(BASE);
   await page.screenshot({ path: `${OUT}/board.png` });
 
