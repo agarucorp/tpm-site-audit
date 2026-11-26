@@ -4,7 +4,7 @@ Internal tool for the **Technical PM Quality Standard — "The site audit"** (wh
 Technical PM audits. Bree approves.
 
 - **Board** (Kanban, one card per client site): `In audit` → `Fix & retest` → `Ready for Bree` → `Approved`.
-- **Audit detail**: site name, URL, audit date, assigned PM and the guide's 3-step process:
+- **Audit detail**: client, URL, audit date and the guide's 3-step process:
   1. **Document coverage** – log tested pages/buttons and confirm 100% coverage on desktop and mobile.
   2. **Fix + retest** – the 12 required checks, each with separate Desktop / Mobile checkboxes, status
      (Pending / Fail / Retest / Pass), owner, notes, screenshot links and retest result.
@@ -14,15 +14,19 @@ Technical PM audits. Bree approves.
 - **Guide**: the source guide rendered in-app.
 - **Audit prompt** (top bar, and in each audit with `Site:` / `URL:` prepended): a short prompt to paste into the
   site's Lovable project, with a Copy button. Text lives in [`src/lib/audit-prompt.ts`](src/lib/audit-prompt.ts).
-- **Audit chat** (bottom-right): no LLM, no API key — a rule-based parser in [`src/lib/chat/`](src/lib/chat/).
-  - Paste the Lovable result (`01 … PASS/FAIL … what's wrong`, also Markdown tables). It sets Desktop/Mobile and
-    status per check (`FAIL (mobile only)` or `Desktop: PASS, Mobile: FAIL` are understood), puts "what's wrong" in the
-    notes, adds check 12 items to *Coming soon* (with their page as the reason), and the card moves automatically
-    (all pass → Ready for Bree, any fail → Fix & retest). The site comes from `Site:`/`URL:` lines, a site name in the
-    text, or the audit currently open.
-  - Commands: `create audit Acme https://acme.com client Acme pm Alex` · `mark 04 fail mobile: dosing in FAQ` ·
-    `mark 01-12 pass` · `move Acme to fix & retest` · `approve Acme: looks good` / `mark Acme done` (Approver role) ·
-    `help`. Every action is confirmed in the chat.
+- **Audit chat** (bottom-right), English or Spanish ([`src/lib/chat/`](src/lib/chat/)):
+  - **Pasted audits are read, not keyword-scanned.** The whole paste goes to a model (`OPENAI_API_KEY`), which returns
+    per-check results with a verbatim quote. A server-side guard (`validateInterpretation`) then applies a check only when
+    the model is confident, the quote is really in the paste, it isn't the audit instructions or a condition
+    ("do not pass…", "si falla…"), and a page or element is named. Everything else is listed as *left unchanged* with the
+    reason. Coming-soon items are verified only when the paste gives a reason. Without `OPENAI_API_KEY` the chat says
+    so and changes nothing.
+  - Explicit commands work without a model: `mark 04 fail mobile: dosing in FAQ` / `marcar 04 falla móvil: …` ·
+    `mark 01-12 pass` · `04 no pasa` · `move Acme to fix & retest` / `mover Acme a listo` ·
+    `create audit Acme https://acme.com` / `crear auditoría …` · `approve Acme` / `aprobar Acme` (Approver role) ·
+    `help` / `ayuda`. Only whole-line commands count.
+- **Checkboxes**: on each check, ticking **Desktop** and **Mobile** sets it to **Pass** (if the guide's prerequisites are met);
+  unticking either moves it off Pass to **Retest**.
 
 All check text comes verbatim from the guide in [`src/lib/checks.ts`](src/lib/checks.ts).
 
@@ -60,6 +64,9 @@ stored in the browser's `localStorage`. The name is recorded on every action in 
 | --- | --- | --- |
 | `DATABASE_URL` | app runtime | Postgres connection string (pooled is fine). |
 | `DATABASE_URL_UNPOOLED` | Prisma migrations | Direct (non-pooled) connection string. Locally it can equal `DATABASE_URL`. |
+| `OPENAI_API_KEY` | audit chat | Needed to read pasted audits. Without it the chat only runs explicit commands. |
+| `OPENAI_MODEL` | audit chat | Optional, default `gpt-4o-mini`. |
+| `OPENAI_BASE_URL` | audit chat | Optional, any OpenAI-compatible endpoint (default `https://api.openai.com/v1`). |
 
 Neon's Vercel integration creates both variables automatically.
 
@@ -100,6 +107,8 @@ Useful scripts:
 | `npm run db:seed` | Insert sample data |
 | `npm run db:reset` | Drop and recreate the **local** database, then seed |
 | `npm run test:e2e` | Full browser walkthrough against a running app (see below) |
+| `npm test` | Unit tests for the chat command parser and the paste guard |
+| `node e2e/chat-model.mjs` | Paste interpretation through the server with a stand-in model (start the app with `OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1:4011/v1`) |
 
 ### End-to-end test
 

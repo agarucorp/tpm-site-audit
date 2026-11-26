@@ -8,6 +8,7 @@ import { ChatPanel } from "@/components/chat-panel";
 import { getInbox } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export const metadata: Metadata = {
   title: "TPM Site Audit",

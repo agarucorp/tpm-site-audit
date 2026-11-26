@@ -28,7 +28,7 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
       </div>
 
       <form className="filters" method="get">
-        <input className="input grow" name="q" defaultValue={filters.q} placeholder="Search site, URL, client, approver, comments…" data-testid="history-search" />
+        <input className="input grow" name="q" defaultValue={filters.q} placeholder="Search client, URL, approver, comments…" data-testid="history-search" />
         <select className="select" name="client" defaultValue={filters.client ?? ""} data-testid="history-client">
           <option value="">All clients</option>
           {clients.map((c) => (
@@ -74,10 +74,6 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
                 </div>
                 <div className="hist-cols">
                   <span>
-                    <span className="muted small">Client</span>
-                    {a.clientName}
-                  </span>
-                  <span>
                     <span className="muted small">Audit date</span>
                     {formatDate(a.auditDate)}
                   </span>
@@ -93,9 +89,6 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
               </summary>
               <div className="hist-body">
                 <div className="hist-meta">
-                  <div>
-                    <span className="muted">Assigned PM</span> {a.assignedPm}
-                  </div>
                   <div>
                     <span className="muted">Submitted to Bree</span> {formatDateTime(a.submittedAt)}
                   </div>

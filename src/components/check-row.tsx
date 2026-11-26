@@ -22,7 +22,7 @@ export function CheckRow({
 }) {
   const def = getCheck(serverCheck.checkNumber);
   const actor = useActor();
-  const { pending, error, run, setError } = useAction();
+  const { pending, error, run, setError, notice, setNotice } = useAction();
   const [check, applyOptimistic] = useOptimisticRecord(serverCheck);
   const complete = isCheckComplete(check);
   const [open, setOpen] = useState(check.status === "FAIL" || check.status === "RETEST");
@@ -44,6 +44,17 @@ export function CheckRow({
       undefined,
       () => applyOptimistic(patch),
     );
+
+  const toggleDevice = (device: "desktopPass" | "mobilePass", done: boolean) => {
+    const next = { ...check, [device]: done };
+    const status: CheckStatus =
+      next.desktopPass && next.mobilePass ? "PASS" : check.status === "PASS" ? "RETEST" : check.status;
+    run(
+      () => updateCheck(auditId, check.checkNumber, { [device]: done }, actor),
+      undefined,
+      () => applyOptimistic({ [device]: done, status }),
+    );
+  };
 
   const addLink = () => {
     const v = link.trim();
@@ -71,26 +82,27 @@ export function CheckRow({
           </ul>
         </div>
         <div className="check-controls">
-          <label className={`device ${check.desktopPass ? "on" : ""}`}>
-            <input
-              type="checkbox"
-              checked={check.desktopPass}
-              disabled={!editable || pending}
-              onChange={(e) => save({ desktopPass: e.target.checked })}
-              data-testid={`check-${def.code}-desktop`}
-            />
-            <span>Desktop</span>
-          </label>
-          <label className={`device ${check.mobilePass ? "on" : ""}`}>
-            <input
-              type="checkbox"
-              checked={check.mobilePass}
-              disabled={!editable || pending}
-              onChange={(e) => save({ mobilePass: e.target.checked })}
-              data-testid={`check-${def.code}-mobile`}
-            />
-            <span>Mobile</span>
-          </label>
+          <div className="device-group" role="group" aria-label={`Check ${def.code} done on`}>
+            <span className="device-group-label">Done on</span>
+            {(
+              [
+                ["desktopPass", "Desktop", "desktop"],
+                ["mobilePass", "Mobile", "mobile"],
+              ] as const
+            ).map(([field, label, id]) => (
+              <label key={field} className={`device ${check[field] ? "on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={check[field]}
+                  disabled={!editable || pending}
+                  onChange={(e) => toggleDevice(field, e.target.checked)}
+                  aria-label={`${def.code} ${label} done`}
+                  data-testid={`check-${def.code}-${id}`}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
           <select
             className={`select status-select s-${check.status.toLowerCase()}`}
             value={check.status}
@@ -108,10 +120,10 @@ export function CheckRow({
         </div>
       </div>
 
-      {error && (
-        <div className="check-error" role="alert">
-          {error}
-          <button className="link-btn" onClick={() => setError(null)}>
+      {(error || notice) && (
+        <div className={error ? "check-error" : "check-notice"} role={error ? "alert" : "status"}>
+          {error ?? notice}
+          <button className="link-btn" onClick={() => (error ? setError(null) : setNotice(null))}>
             Dismiss
           </button>
         </div>

@@ -6,20 +6,20 @@ import { createAudit } from "@/lib/actions";
 import { useActor, useRole } from "./role-provider";
 
 export function NewAuditButton() {
-  const { isPm, name } = useRole();
+  const { isPm } = useRole();
   const actor = useActor();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ siteName: "", clientName: "", url: "", auditDate: "", assignedPm: "" });
+  const [form, setForm] = useState({ siteName: "", url: "", auditDate: "" });
 
   useEffect(() => {
     if (open) {
-      setForm({ siteName: "", clientName: "", url: "", auditDate: new Date().toISOString().slice(0, 10), assignedPm: name });
+      setForm({ siteName: "", url: "", auditDate: new Date().toISOString().slice(0, 10) });
       setError(null);
     }
-  }, [open, name]);
+  }, [open]);
 
   if (!isPm) return null;
 
@@ -51,13 +51,9 @@ export function NewAuditButton() {
               </button>
             </div>
             <div className="modal-body form-grid">
-              <label>
-                <span>Site name</span>
-                <input className="input" value={form.siteName} onChange={set("siteName")} required autoFocus name="siteName" />
-              </label>
-              <label>
+              <label className="span-2">
                 <span>Client</span>
-                <input className="input" value={form.clientName} onChange={set("clientName")} placeholder="Defaults to site name" name="clientName" />
+                <input className="input" value={form.siteName} onChange={set("siteName")} required autoFocus name="siteName" />
               </label>
               <label className="span-2">
                 <span>URL</span>
@@ -66,10 +62,6 @@ export function NewAuditButton() {
               <label>
                 <span>Audit date</span>
                 <input className="input" type="date" value={form.auditDate} onChange={set("auditDate")} required name="auditDate" />
-              </label>
-              <label>
-                <span>Assigned PM</span>
-                <input className="input" value={form.assignedPm} onChange={set("assignedPm")} required name="assignedPm" />
               </label>
               {error && <div className="error span-2">{error}</div>}
             </div>

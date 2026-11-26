@@ -1,184 +1,48 @@
 import type { AuditStage, CheckStatus } from "@prisma/client";
 
-export type DeviceResult = "PASS" | "FAIL";
-
-export type ParsedCheck = {
-  number: number;
-  desktop?: DeviceResult;
-  mobile?: DeviceResult;
-  notes: string;
-  items: string[];
-};
-
-export type ParsedReport = {
-  site?: string;
-  url?: string;
-  checks: ParsedCheck[];
-};
+export type Device = "desktop" | "mobile";
 
 export type Command =
   | { kind: "help" }
-  | { kind: "create"; siteName: string; url: string; clientName?: string; assignedPm?: string }
+  | { kind: "create"; siteName: string; url: string }
   | {
       kind: "mark";
       checks: number[];
       status: CheckStatus;
-      device?: "desktop" | "mobile";
+      device?: Device;
       note?: string;
       rest: string;
     }
   | { kind: "move"; target: AuditStage; rest: string }
   | { kind: "approve"; rest: string; comment?: string };
 
-const KEYWORDS: Record<number, RegExp> = {
-  1: /button|cta/i,
-  2: /homepage|continuity/i,
-  3: /packag/i,
-  4: /dosing|dosage/i,
-  5: /duration|checkout/i,
-  6: /confirmation/i,
-  7: /hrt|intake/i,
-  8: /\blabs?\b|biomarker|panel/i,
-  9: /legit\s*script/i,
-  10: /business|legal/i,
-  11: /imagery|images?\b/i,
-  12: /coming\s*soon|unavailable/i,
-};
-
-const HEADER = /^[\s>#*_|\-\u2022]*(?:check\s*)?#?\s*(0[1-9]|1[0-2]|[1-9])(?![\d/])\s*(?:[.):\-\u2013\u2014|*_]|\s|$)/i;
-
-function headerNumber(line: string): number | null {
-  const m = line.match(HEADER);
-  if (!m) return null;
-  const n = Number(m[1]);
-  const rest = line.slice(m[0].length);
-  const padded = m[1].length === 2;
-  if (padded && (KEYWORDS[n].test(rest) || /\b(pass|fail)/i.test(rest) || /^\s*\|/.test(line))) return n;
-  if (KEYWORDS[n].test(rest.slice(0, 60))) return n;
-  return null;
-}
-
-function clean(s: string): string {
+/** Lowercase, strip accents and collapse whitespace so Spanish and English input compare the same way. */
+export function fold(s: string): string {
   return s
-    .replace(/\*\*|__|`/g, "")
-    .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
-    .replace(/\s*\|\s*/g, " — ")
-    .replace(/[ \t]+/g, " ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
     .trim();
 }
 
-const RESULT = /\b(pass(?:ed|es)?|fail(?:ed|s|ing)?)\b/gi;
-const toResult = (w: string): DeviceResult => (w.toLowerCase().startsWith("p") ? "PASS" : "FAIL");
-
-function deviceResult(text: string, device: "desktop" | "mobile"): DeviceResult | undefined {
-  const before = new RegExp(`${device}\\s*(?:\\([^)]*\\))?\\s*[:=\\-\u2013\u2014]?\\s*\\**\\s*(pass(?:ed)?|fail(?:ed)?)\\b`, "i");
-  const after = new RegExp(`\\b(pass(?:ed)?|fail(?:ed)?)\\b[^\\n.]{0,12}?\\b(?:on|for|in)?\\s*${device}`, "i");
-  const m = text.match(before) ?? text.match(after);
-  return m ? toResult(m[1]) : undefined;
-}
-
-function overallResult(text: string): DeviceResult | undefined {
-  const upper = text.match(/\b(PASS(?:ED)?|FAIL(?:ED)?)\b/);
-  if (upper) return toResult(upper[1]);
-  const any = [...text.matchAll(RESULT)];
-  return any.length ? toResult(any[0][1]) : undefined;
-}
-
-const ITEM = /^\s*(?:[-*\u2022]|\d+[.)])\s+(.+)$/;
-
-/** Parses an audit result in the "01 … PASS/FAIL … page/element … what's wrong" format. */
-export function parseReport(text: string): ParsedReport {
-  const lines = text.replace(/\r/g, "").split("\n");
-  const report: ParsedReport = { checks: [] };
-
-  for (const line of lines.slice(0, 12)) {
-    const site = line.match(/^\s*\**\s*site(?:\s*name)?\s*\**\s*[:\-]\s*(.+)$/i);
-    if (site && !report.site) report.site = clean(site[1]);
-    const url = line.match(/^\s*\**\s*url\s*\**\s*[:\-]\s*(\S+)/i);
-    if (url && !report.url) report.url = clean(url[1]);
-  }
-
-  type Block = { number: number; lines: string[] };
-  const blocks: Block[] = [];
-  let current: Block | null = null;
-  for (const line of lines) {
-    const n = headerNumber(line);
-    const isRepeat = n !== null && (current as Block | null)?.number === n;
-    if (n !== null && !isRepeat && !blocks.some((b) => b.number === n)) {
-      current = { number: n, lines: [line] };
-      blocks.push(current);
-    } else if (current) {
-      current.lines.push(line);
-    }
-  }
-
-  for (const b of blocks) {
-    const body = b.lines.join("\n");
-    const overall = overallResult(body);
-    const dSpec = deviceResult(body, "desktop");
-    const mSpec = deviceResult(body, "mobile");
-    if (!dSpec && !mSpec && !overall) {
-      report.checks.push({ number: b.number, notes: clean(body), items: [] });
-      continue;
-    }
-    // "FAIL (mobile only)" means the other device passed.
-    const only = body.match(/\b(desktop|mobile)[\s-]+only\b|\bonly\s+(?:on\s+)?(desktop|mobile)\b/i);
-    const onlyDevice = only ? (only[1] ?? only[2]).toLowerCase() : null;
-    const failOnly = overall === "FAIL" && onlyDevice;
-    const desktop = dSpec ?? (failOnly ? (onlyDevice === "desktop" ? "FAIL" : "PASS") : (overall ?? mSpec));
-    const mobile = mSpec ?? (failOnly ? (onlyDevice === "mobile" ? "FAIL" : "PASS") : (overall ?? dSpec));
-
-    const header = b.lines[0]
-      .replace(HEADER, "")
-      .replace(/^[^:\-\u2013\u2014|]{0,60}?(?:[:\u2013\u2014|]|\s-\s)\s*/, "")
-      .replace(/^\s*\**\s*(pass(?:ed)?|fail(?:ed)?)\s*\**\s*[.:\-\u2013\u2014|]?\s*/i, "");
-    const noteLines = [header, ...b.lines.slice(1)]
-      .map((l) => clean(l).replace(/(?:\s*\u2014\s*)+$/, "").replace(/^\s*\u2014\s*/, ""))
-      .filter((l) => l && !/^[-\u2014|:\s]+$/.test(l));
-    const items =
-      b.number === 12
-        ? b.lines
-            .slice(1)
-            .map((l) => l.match(ITEM)?.[1] ?? (/^\s*\|/.test(l) && !/^[\s|:-]+$/.test(l) ? l : null))
-            .filter((l): l is string => !!l)
-            .map(clean)
-            .filter((l) => l && !/^(none|n\/a|product\b)/i.test(l) && !/^(pass|fail)/i.test(l))
-        : [];
-    report.checks.push({ number: b.number, desktop, mobile, notes: noteLines.join("\n").slice(0, 4000), items });
-  }
-  report.checks.sort((a, z) => a.number - z.number);
-  return report;
-}
-
-export function looksLikeReport(text: string): boolean {
-  const lines = text.split("\n");
-  return lines.filter((l) => headerNumber(l) !== null).length >= 2;
-}
-
-/** "Tirzepatide — /products/glp1" -> product + page */
-export function splitComingSoonItem(item: string): { product: string; page: string } {
-  const m = item.match(/^(.+?)\s*(?:\s[\u2013\u2014-]\s|:\s|\s\(|\s+on\s+|\s+at\s+|\s+—\s*)(.+?)\)?$/i);
-  if (!m) return { product: item.replace(/[.;]$/, ""), page: "" };
-  return { product: m[1].replace(/^["“]|["”]$/g, "").trim(), page: m[2].replace(/^(?:on|at)\s+/i, "").trim() };
-}
-
 const STAGE_ALIASES: [RegExp, AuditStage][] = [
-  [/^(in\s*)?audit/i, "IN_AUDIT"],
-  [/^(fix|retest)/i, "FIX_RETEST"],
-  [/^(ready|bree)/i, "READY_FOR_BREE"],
-  [/^(approved?|done|archive)/i, "APPROVED"],
+  [/^(in\s*|en\s*)?(audit|auditoria)/, "IN_AUDIT"],
+  [/^(fix|retest|re-test|arreglar|corregir|correccion)/, "FIX_RETEST"],
+  [/^(ready|listo|lista|bree)/, "READY_FOR_BREE"],
+  [/^(approved?|aprobad[oa]|done|hecho|archive|archivo)/, "APPROVED"],
 ];
 
 function parseStage(s: string): AuditStage | null {
-  const t = s.trim().replace(/^["“']|["”']$/g, "");
+  const t = s.trim().replace(/^["“'«]|["”'»]$/g, "");
   for (const [re, stage] of STAGE_ALIASES) if (re.test(t)) return stage;
   return null;
 }
 
 function parseCheckList(s: string): number[] | null {
-  if (/^all\b/i.test(s)) return Array.from({ length: 12 }, (_, i) => i + 1);
+  if (/^(all|todos|todas)\b/.test(s)) return Array.from({ length: 12 }, (_, i) => i + 1);
   const out = new Set<number>();
-  for (const part of s.split(/\s*(?:,|and|&|\s)\s*/i).filter(Boolean)) {
+  for (const part of s.split(/\s*(?:,|\by\b|\band\b|&|\s)\s*/).filter(Boolean)) {
     const range = part.match(/^(\d{1,2})\s*[-\u2013]\s*(\d{1,2})$/);
     if (range) {
       for (let i = Number(range[1]); i <= Number(range[2]); i++) out.add(i);
@@ -189,63 +53,69 @@ function parseCheckList(s: string): number[] | null {
   return nums.length ? nums.sort((a, b) => a - b) : null;
 }
 
-const STATUS_WORD: Record<string, CheckStatus> = {
-  pass: "PASS",
-  passed: "PASS",
-  ok: "PASS",
-  fail: "FAIL",
-  failed: "FAIL",
-  retest: "RETEST",
-  pending: "PENDING",
-};
+// Verdicts accepted in an explicit command, e.g. "mark 04 fail" / "marcar 04 no pasa".
+const VERDICT =
+  "no pasa|no paso|pass(?:ed)?|ok|aprobad[oa]|pasa|paso|fail(?:ed)?|falla|fallo|fallad[oa]|fallid[oa]|reprobad[oa]|desaprobad[oa]|retest|re-test|pending|pendiente";
 
+function verdictStatus(word: string): CheckStatus | null {
+  const w = word.replace(/\s+/g, " ");
+  if (/^(no pasa|no paso|fail|falla|fallo|fallad|fallid|reprobad|desaprobad)/.test(w)) return "FAIL";
+  if (/^(pass|ok|aprobad|pasa|paso)/.test(w)) return "PASS";
+  if (/^(retest|re-test)/.test(w)) return "RETEST";
+  if (/^(pending|pendiente)/.test(w)) return "PENDING";
+  return null;
+}
+
+const LIST = "(?:all|todos|todas|\\d{1,2})(?:\\s*(?:,|-|\\u2013|\\band\\b|\\by\\b|&|\\s)\\s*\\d{1,2})*";
+
+/**
+ * Parses one explicit command line. Only whole-line matches count, so text that merely
+ * contains "pass" or "fail" is never treated as a command.
+ */
 export function parseCommand(input: string): Command | null {
-  const text = input.trim().replace(/\s+/g, " ");
-  if (/^(help|\?|commands)$/i.test(text)) return { kind: "help" };
+  const raw = input.trim().replace(/\s+/g, " ");
+  const text = fold(raw);
+  if (/^(help|ayuda|\?|commands|comandos)$/.test(text)) return { kind: "help" };
 
-  const create = text.match(/^(?:create|new|add)\s+(?:a\s+)?(?:new\s+)?(?:client|audit|site)\s*:?\s+(.+)$/i);
+  const create = raw.match(
+    /^(?:create|new|add|crear|crea|nueva|nuevo|agregar|agrega|añadir)\s+(?:an?\s+|una?\s+)?(?:new\s+|nueva\s+)?(?:client|audit|site|cliente|auditor[ií]a|sitio)\s*:?\s+(.+)$/i,
+  );
   if (create) {
     let rest = create[1];
-    const pick = (re: RegExp) => {
-      const m = rest.match(re);
-      if (!m) return undefined;
-      rest = rest.replace(m[0], " ");
-      return m[1].trim();
-    };
-    const url = pick(/(?:url\s*[:=]?\s*)?((?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?)/i);
-    const assignedPm = pick(/\b(?:pm|assigned(?:\s+to)?)\s*[:=]?\s*([^,;]+?)(?=\s+client\b|$|,)/i);
-    const clientName = pick(/\bclient\s*[:=]?\s*([^,;]+?)(?=\s+pm\b|$|,)/i);
-    const siteName = rest.replace(/\b(?:site|name|url)\s*[:=]/gi, " ").replace(/[,;"“”]/g, " ").replace(/\s+/g, " ").trim();
-    return { kind: "create", siteName, url: url ?? "", clientName, assignedPm };
+    const url = rest.match(/(?:url\s*[:=]?\s*)?((?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?)/i);
+    if (url) rest = rest.replace(url[0], " ");
+    const siteName = rest
+      .replace(/\b(?:client|cliente|site|sitio|name|nombre|url)\s*[:=]/gi, " ")
+      .replace(/[,;"“”]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { kind: "create", siteName, url: url?.[1] ?? "" };
   }
 
-  const move = text.match(/^move\s+(?:card\s+)?(.*?)\s*(?:\bto\b|->|→)\s+(.+)$/i);
-  if (move) {
-    const target = parseStage(move[2]);
+  const move = raw.match(/^(?:move|mover|mueve|pasar|pasa)\s+(?:(?:the\s+)?card\s+|(?:la\s+)?tarjeta\s+)?(.*?)\s*(?:\bto\b|\ba\b|->|→)\s+(.+)$/i);
+  if (move && !/^\d/.test(move[1])) {
+    const target = parseStage(fold(move[2]));
     if (target) return { kind: "move", target, rest: move[1] };
-  }
-
-  const approve =
-    text.match(/^approve\b\s*(.*?)(?:\s*[:\u2014-]\s+(.+))?$/i) ??
-    text.match(/^(?:mark\s+)?(.+?)\s+(?:as\s+)?(?:done|approved)(?:\s*[:\u2014-]\s+(.+))?$/i);
-  if (approve && !/\b(pass|fail|check)\b/i.test(approve[1] ?? "")) {
-    return { kind: "approve", rest: approve[1] ?? "", comment: approve[2] };
   }
 
   const mark =
     text.match(
-      /^(?:mark\s+|set\s+)?(?:checks?\s*)?#?((?:all|\d{1,2})(?:\s*(?:,|-|\u2013|and|&|\s)\s*\d{1,2})*)\s+(?:as\s+|to\s+)?(pass(?:ed)?|fail(?:ed)?|ok|retest|pending)\b(.*)$/i,
-    ) ??
-    text.match(/^(pass|fail|retest|pending)\s+(?:checks?\s*)?#?((?:all|\d{1,2})(?:\s*(?:,|-|\u2013|and|&|\s)\s*\d{1,2})*)\b(.*)$/i);
+      new RegExp(
+        `^(?:mark|set|marcar|marca|marque|poner|pon)?\\s*(?:checks?|chequeos?|controles|control)?\\s*#?(${LIST})\\s+(?:as\\s+|to\\s+|como\\s+|en\\s+)?(${VERDICT})\\b(.*)$`,
+      ),
+    ) ?? text.match(new RegExp(`^(pass|fail|retest|pending)\\s+(?:checks?\\s*)?#?(${LIST})\\b(.*)$`));
   if (mark) {
-    const swapped = /^(pass|fail|retest|pending)$/i.test(mark[1]);
+    const swapped = /^(pass|fail|retest|pending)$/.test(mark[1]);
     const list = parseCheckList(swapped ? mark[2] : mark[1]);
-    const status = STATUS_WORD[(swapped ? mark[1] : mark[2]).toLowerCase()];
-    let tail = mark[3] ?? "";
-    let device: "desktop" | "mobile" | undefined;
-    const dev = tail.match(/^\s*(?:on\s+|for\s+)?(desktop|mobile|both)\b/i);
+    const status = verdictStatus(swapped ? mark[1] : mark[2]);
+    const tailStart = raw.length - (mark[3] ?? "").length;
+    let tail = raw.slice(tailStart).trimStart();
+    let device: Device | undefined;
+    const dev = fold(tail).match(/^\s*(?:on\s+|for\s+|en\s+(?:el\s+)?|in\s+)?(desktop|escritorio|mobile|movil|celular|both|ambos)\b/);
     if (dev) {
-      if (dev[1].toLowerCase() !== "both") device = dev[1].toLowerCase() as "desktop" | "mobile";
+      const d = dev[1];
+      if (d === "desktop" || d === "escritorio") device = "desktop";
+      else if (d === "mobile" || d === "movil" || d === "celular") device = "mobile";
       tail = tail.slice(dev[0].length);
     }
     const noteMatch = tail.match(/\s*[:\u2014]\s*(.+)$|\s+-\s+(.+)$/);
@@ -254,15 +124,55 @@ export function parseCommand(input: string): Command | null {
     if (list && status) return { kind: "mark", checks: list, status, device, note, rest };
   }
 
+  const approve =
+    raw.match(/^(?:approve|aprobar|aprueba|aprobá)\b\s*(.*?)(?:\s*[:\u2014-]\s+(.+))?$/i) ??
+    raw.match(/^(?:mark|marcar|marca)\s+(.+?)\s+(?:as\s+|como\s+)?(?:done|approved|hecho|aprobad[oa])(?:\s*[:\u2014-]\s+(.+))?$/i);
+  if (approve && !/^\s*\d/.test(approve[1] ?? "")) {
+    return { kind: "approve", rest: approve[1] ?? "", comment: approve[2] };
+  }
+
   return null;
 }
 
-export const HELP_TEXT = `Paste an audit result (01 … 12 with PASS/FAIL) to fill the open audit, or name the site with "Site: …" / "URL: …".
+/** Splits a message into command lines; returns null unless every line is a command. */
+export function parseCommands(text: string): Command[] | null {
+  const lines = text
+    .split(/\n|;/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length || lines.length > 12) return null;
+  const cmds = lines.map(parseCommand);
+  return cmds.every((c): c is Command => c !== null) ? cmds : null;
+}
 
-Commands:
-• create audit Acme Health https://acme.com client Acme pm Alex
-• mark 04 fail mobile: dosing table in FAQ image
-• mark 01-12 pass   ·   pass 07 desktop   ·   05 retest
-• move Acme Health to fix & retest   (in audit · fix · ready · approved)
-• approve Acme Health: looks good   ·   mark Acme Health done
-Add "on <site>" to target another audit; otherwise the open audit is used.`;
+/**
+ * True when a message should go to the paste interpreter rather than be rejected as
+ * an unknown command. This only routes the message; it never changes a check.
+ */
+export function looksLikeAuditPaste(text: string): boolean {
+  const lines = text.split("\n").filter((l) => l.trim());
+  if (lines.length >= 2) return true;
+  if (text.length > 160) return true;
+  return /(?:^|\D)(0[1-9]|1[0-2])(?:\D|$)/.test(text);
+}
+
+export function siteHints(text: string): { site?: string; url?: string } {
+  const out: { site?: string; url?: string } = {};
+  for (const line of text.replace(/\r/g, "").split("\n").slice(0, 15)) {
+    const site = line.match(/^\s*[*_#>\s]*(?:site(?:\s*name)?|sitio|client|cliente)\s*[*_]*\s*[:\-]\s*(.+)$/i);
+    if (site && !out.site) out.site = site[1].replace(/[*_`]/g, "").trim();
+    const url = line.match(/^\s*[*_#>\s]*url\s*[*_]*\s*[:\-]\s*(\S+)/i);
+    if (url && !out.url) out.url = url[1].replace(/[*_`]/g, "").trim();
+  }
+  return out;
+}
+
+export const HELP_TEXT = `Paste the full audit result and I'll read it, apply only the checks it clearly reports (verdict + page or element), and list anything I left alone. Spanish or English.
+
+Commands (English or Spanish):
+• create audit Acme Health https://acme.com   ·   crear auditoría Acme https://acme.com
+• mark 04 fail mobile: dosing table in FAQ   ·   marcar 04 falla móvil: dosis en FAQ
+• mark 01-12 pass   ·   marcar 07 aprobado escritorio   ·   05 retest
+• move Acme Health to fix & retest   ·   mover Acme a listo
+• approve Acme Health: looks good   ·   aprobar Acme
+Add the site name to target another audit; otherwise the open audit is used.`;

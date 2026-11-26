@@ -80,16 +80,8 @@ export function AuditDetail({ audit }: { audit: FullAudit }) {
             </a>
           </div>
           <div>
-            <span className="muted">Client</span>
-            <span>{audit.clientName}</span>
-          </div>
-          <div>
             <span className="muted">Audit date</span>
             <span>{formatDate(audit.auditDate)}</span>
-          </div>
-          <div>
-            <span className="muted">Assigned PM</span>
-            <span>{audit.assignedPm}</span>
           </div>
           <div>
             <span className="muted">Checks complete</span>
@@ -215,10 +207,8 @@ function DetailsForm({ audit, onDone, onDeleted }: { audit: FullAudit; onDone: (
   const { pending, error, run } = useAction();
   const [form, setForm] = useState({
     siteName: audit.siteName,
-    clientName: audit.clientName,
     url: audit.url,
     auditDate: toDateInput(audit.auditDate),
-    assignedPm: audit.assignedPm,
   });
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -232,12 +222,8 @@ function DetailsForm({ audit, onDone, onDeleted }: { audit: FullAudit; onDone: (
       }}
     >
       <label>
-        <span>Site name</span>
-        <input className="input" value={form.siteName} onChange={set("siteName")} />
-      </label>
-      <label>
         <span>Client</span>
-        <input className="input" value={form.clientName} onChange={set("clientName")} />
+        <input className="input" value={form.siteName} onChange={set("siteName")} />
       </label>
       <label className="span-2">
         <span>URL</span>
@@ -246,10 +232,6 @@ function DetailsForm({ audit, onDone, onDeleted }: { audit: FullAudit; onDone: (
       <label>
         <span>Audit date</span>
         <input className="input" type="date" value={form.auditDate} onChange={set("auditDate")} />
-      </label>
-      <label>
-        <span>Assigned PM</span>
-        <input className="input" value={form.assignedPm} onChange={set("assignedPm")} />
       </label>
       {error && <div className="error span-2">{error}</div>}
       <div className="btn-row span-2 spread">
