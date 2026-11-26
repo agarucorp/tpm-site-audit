@@ -24,10 +24,8 @@ async function main() {
   const lumina = await prisma.audit.create({
     data: {
       siteName: "Lumina Wellness",
-      clientName: "Lumina Health Group",
       url: "https://luminawellness.example.com",
       auditDate: days(2),
-      assignedPm: "Alex Rivera",
       stage: "FIX_RETEST",
       checks: {
         create: [
@@ -77,10 +75,8 @@ async function main() {
   await prisma.audit.create({
     data: {
       siteName: "Northside Men's Health",
-      clientName: "Northside Clinics",
       url: "https://northside.example.com",
       auditDate: days(0),
-      assignedPm: "Jordan Lee",
       checks: {
         create: Array.from({ length: 12 }, (_, i) =>
           i < 2
@@ -98,10 +94,8 @@ async function main() {
   await prisma.audit.create({
     data: {
       siteName: "Harbor Hormone Health",
-      clientName: "Harbor Health",
       url: "https://harborhormone.example.com",
       auditDate: days(4),
-      assignedPm: "Jordan Lee",
       stage: "READY_FOR_BREE",
       submittedAt: days(1),
       checks: { create: allPass() },
@@ -127,10 +121,8 @@ async function main() {
   await prisma.audit.create({
     data: {
       siteName: "Peak Vitality Clinic",
-      clientName: "Peak Vitality",
       url: "https://peakvitality.example.com",
       auditDate: days(12),
-      assignedPm: "Alex Rivera",
       stage: "APPROVED",
       submittedAt: days(9),
       approvedAt: days(8),

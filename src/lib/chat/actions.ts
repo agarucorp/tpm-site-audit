@@ -3,11 +3,13 @@
 import type { Audit, AuditStage, CheckResult, CheckStatus } from "@prisma/client";
 import { prisma } from "../db";
 import { getCheck } from "../checks";
-import { allChecksComplete, comingSoonVerified, coverageComplete, STAGE_LABEL, STATUS_LABEL } from "../workflow";
+import { allChecksComplete, passBlocker, STAGE_LABEL, STATUS_LABEL } from "../workflow";
 import { actorName, refresh, syncStage, type Actor } from "../stage";
 import { approveAudit, createAudit } from "../actions";
 import { hostOf } from "../format";
-import { HELP_TEXT, looksLikeReport, parseCommand, parseReport, splitComingSoonItem, type ParsedCheck } from "./parse";
+import { fold, HELP_TEXT, looksLikeAuditPaste, parseCommands, siteHints, type Command } from "./parse";
+import { validateInterpretation, type Interpretation } from "./interpret";
+import { interpretWithModel, MODEL_KEY_ENV, modelConfigured } from "./model";
 
 export type ChatReply = { tone: "ok" | "error" | "info"; text: string; href?: string; linkLabel?: string };
 export type ChatResult = { replies: ChatReply[]; auditId?: string };
@@ -16,10 +18,12 @@ const ok = (text: string, extra: Partial<ChatReply> = {}): ChatReply => ({ tone:
 const err = (text: string): ChatReply => ({ tone: "error", text });
 const info = (text: string): ChatReply => ({ tone: "info", text });
 
-type AuditRef = Pick<Audit, "id" | "siteName" | "clientName" | "url" | "stage">;
+const MAX_INPUT = 40_000;
+
+type AuditRef = Pick<Audit, "id" | "siteName" | "url" | "stage">;
 
 function norm(s: string) {
-  return s.toLowerCase().replace(/^www\./, "").trim();
+  return fold(s).replace(/^www\./, "");
 }
 
 async function resolveAudit(
@@ -28,7 +32,7 @@ async function resolveAudit(
   currentId?: string,
 ): Promise<{ audit: AuditRef } | { error: string }> {
   const audits = await prisma.audit.findMany({
-    select: { id: true, siteName: true, clientName: true, url: true, stage: true },
+    select: { id: true, siteName: true, url: true, stage: true },
     orderBy: { updatedAt: "desc" },
   });
   if (hints.url) {
@@ -43,24 +47,24 @@ async function resolveAudit(
       audits.find((a) => norm(a.siteName).includes(site) || site.includes(norm(a.siteName)));
     if (bySite) return { audit: bySite };
   }
-  if (hints.site || hints.url) {
-    return { error: `No audit matches ${hints.site ?? ""} ${hints.url ?? ""}. Create it first: create audit ${hints.site ?? "Name"} ${hints.url ?? "https://…"}` };
-  }
   const t = norm(text);
   const mentioned = audits
     .map((a) => {
-      const names = [a.siteName, a.clientName, hostOf(a.url)].map(norm).filter((n) => n.length >= 3);
+      const names = [a.siteName, hostOf(a.url)].map(norm).filter((n) => n.length >= 3);
       const hit = names.filter((n) => t.includes(n)).sort((x, y) => y.length - x.length)[0];
       return hit ? { a, len: hit.length } : null;
     })
-    .filter((x): x is { a: AuditRef; len: number } => !!x)
+    .filter((x) => x !== null)
     .sort((x, y) => y.len - x.len);
   if (mentioned.length) return { audit: mentioned[0].a };
   if (currentId) {
     const cur = audits.find((a) => a.id === currentId);
     if (cur) return { audit: cur };
   }
-  return { error: "Which site? Open an audit or add “on <site name>”." };
+  if (hints.site || hints.url) {
+    return { error: `No audit matches ${[hints.site, hints.url].filter(Boolean).join(" ")}. Create it first: create audit Name https://…` };
+  }
+  return { error: "Which site? Open the audit card first, or include the client name." };
 }
 
 function checkLabel(n: number) {
@@ -72,29 +76,7 @@ function devices(c: Pick<CheckResult, "desktopPass" | "mobilePass">) {
   return `Desktop ${c.desktopPass ? "✓" : "✗"} · Mobile ${c.mobilePass ? "✓" : "✗"}`;
 }
 
-/** Check 01 claims 100% coverage: reflect it in the step-01 log. */
-async function ensureCoverage(auditId: string, desktop: boolean, mobile: boolean, summary: string) {
-  const rows = await prisma.coverageItem.findMany({ where: { auditId } });
-  if (rows.length === 0) {
-    await prisma.coverageItem.create({
-      data: {
-        auditId,
-        page: "All pages (from audit report)",
-        element: summary.split("\n")[0].slice(0, 200) || "Every button, link, menu, form and checkout step",
-        desktopTested: desktop,
-        mobileTested: mobile,
-      },
-    });
-    return 1;
-  }
-  await prisma.coverageItem.updateMany({
-    where: { auditId },
-    data: { ...(desktop ? { desktopTested: true } : {}), ...(mobile ? { mobileTested: true } : {}) },
-  });
-  return 0;
-}
-
-/** Writes one check and enforces the guide's Pass prerequisites. Returns a confirmation line. */
+/** Writes one check, keeping the guide's Pass prerequisites. Returns a confirmation line. */
 async function writeCheck(
   auditId: string,
   n: number,
@@ -102,22 +84,16 @@ async function writeCheck(
   replies: ChatReply[],
 ) {
   let status = next.status;
-  if (status === "PASS" && n === 1) {
-    const created = await ensureCoverage(auditId, next.desktopPass, next.mobilePass, next.notes ?? "");
-    if (created) replies.push(info("Step 01: added a coverage row (all pages, desktop + mobile) from check 01."));
-  }
-  if (status === "PASS" && n === 12) {
-    await prisma.comingSoonItem.updateMany({ where: { auditId, NOT: { reason: "" } }, data: { verified: true } });
-    const items = await prisma.comingSoonItem.findMany({ where: { auditId } });
-    if (!comingSoonVerified(items)) {
+  if (status === "PASS") {
+    const [coverage, comingSoon] = await Promise.all([
+      prisma.coverageItem.findMany({ where: { auditId } }),
+      prisma.comingSoonItem.findMany({ where: { auditId } }),
+    ]);
+    const blocker = passBlocker(n, next, coverage, comingSoon);
+    if (blocker) {
       status = "RETEST";
-      const missing = items.filter((i) => !i.reason.trim()).map((i) => i.product);
-      replies.push(err(`12 kept at Retest: add a reason for ${missing.join(", ")} in the Coming soon panel.`));
+      replies.push(info(`${checkLabel(n)} kept at Retest: ${blocker}`));
     }
-  }
-  if (status === "PASS" && n === 1) {
-    const rows = await prisma.coverageItem.findMany({ where: { auditId } });
-    if (!coverageComplete(rows)) status = "RETEST";
   }
   const updated = await prisma.checkResult.update({
     where: { auditId_checkNumber: { auditId, checkNumber: n } },
@@ -128,52 +104,77 @@ async function writeCheck(
       ...(next.notes !== undefined && next.notes.trim() ? { notes: next.notes.trim() } : {}),
     },
   });
-  return `${checkLabel(n)} → ${STATUS_LABEL[updated.status]} (${devices(updated)})${next.notes?.trim() ? " · notes set" : ""}`;
+  return `${checkLabel(n)} → ${STATUS_LABEL[updated.status]} (${devices(updated)})`;
 }
 
-async function applyReport(audit: AuditRef, checks: ParsedCheck[], actor: Actor, replies: ChatReply[]) {
-  const lines: string[] = [];
-  const skipped: number[] = [];
-  for (const c of checks) {
-    if (!c.desktop || !c.mobile) {
-      skipped.push(c.number);
-      continue;
-    }
-    if (c.number === 12 && c.items.length) {
-      const existing = await prisma.comingSoonItem.findMany({ where: { auditId: audit.id } });
-      let added = 0;
-      for (const raw of c.items) {
-        const { product, page } = splitComingSoonItem(raw);
-        if (!product) continue;
-        const reason = page ? `Marked coming soon on ${page}` : "Listed as coming soon in the audit report";
-        const match = existing.find((e) => norm(e.product) === norm(product));
-        if (match) {
-          await prisma.comingSoonItem.update({ where: { id: match.id }, data: { reason: match.reason || reason, verified: true } });
-        } else {
-          await prisma.comingSoonItem.create({ data: { auditId: audit.id, product, reason, verified: true } });
-          added++;
-        }
-      }
-      replies.push(ok(`Coming soon: ${c.items.length} item(s) from check 12 (${added} new), marked verified with their page.`));
-    }
-    const both = c.desktop === "PASS" && c.mobile === "PASS";
-    lines.push(
-      await writeCheck(
-        audit.id,
-        c.number,
-        {
-          desktopPass: c.desktop === "PASS",
-          mobilePass: c.mobile === "PASS",
-          status: both ? "PASS" : "FAIL",
-          notes: c.notes,
-        },
-        replies,
-      ),
+async function applyInterpretation(audit: AuditRef, result: Interpretation, replies: ChatReply[]) {
+  const current = new Map(
+    (await prisma.checkResult.findMany({ where: { auditId: audit.id } })).map((c) => [c.checkNumber, c]),
+  );
+  const changed: string[] = [];
+  for (const d of result.apply) {
+    const c = current.get(d.check);
+    if (!c) continue;
+    const desktopPass = d.desktop ?? c.desktopPass;
+    const mobilePass = d.mobile ?? c.mobilePass;
+    const status: CheckStatus = d.failed
+      ? "FAIL"
+      : desktopPass && mobilePass
+        ? "PASS"
+        : c.status === "PASS"
+          ? "RETEST"
+          : c.status;
+    const notes = d.note && !c.notes.includes(d.note) ? [c.notes, d.note].filter(Boolean).join("\n") : undefined;
+    const line = await writeCheck(audit.id, d.check, { desktopPass, mobilePass, status, notes }, replies);
+    changed.push(`• ${line}\n   Why: “${d.evidence}”`);
+  }
+
+  if (changed.length) {
+    replies.unshift(ok(`${audit.siteName}: changed ${changed.length} check(s) from the paste\n${changed.join("\n")}`));
+  } else {
+    replies.unshift(
+      info(`${audit.siteName}: no checks changed. I didn't find a clear result (a verdict plus the page or element) for any check.`),
     );
   }
-  if (lines.length) replies.unshift(ok(`${audit.siteName}: applied ${lines.length} check(s)\n${lines.join("\n")}`));
-  if (skipped.length) replies.push(err(`No PASS/FAIL found for ${skipped.map(checkLabel).join(", ")} — left unchanged.`));
-  if (!lines.length && !skipped.length) replies.push(err("I couldn't find any checks (01–12) in that paste."));
+
+  const seen = new Set<string>();
+  const left = result.skipped
+    .filter((s) => {
+      const k = `${s.check}|${s.why}|${s.quote}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, 15)
+    .map((s) => `• ${s.check ? checkLabel(s.check) : "Line"}: ${s.why}${s.quote ? ` (“${s.quote}”)` : ""}`);
+  if (left.length) replies.push(info(`Left unchanged — not clear enough:\n${left.join("\n")}`));
+
+  if (result.comingSoon.length) {
+    const existing = await prisma.comingSoonItem.findMany({ where: { auditId: audit.id } });
+    const lines: string[] = [];
+    for (const item of result.comingSoon) {
+      const match = existing.find((e) => norm(e.product) === norm(item.product));
+      const where = item.page ? ` (${item.page})` : "";
+      if (match) {
+        if (item.verified && !match.reason.trim()) {
+          await prisma.comingSoonItem.update({ where: { id: match.id }, data: { reason: item.reason, verified: true } });
+          lines.push(`• ${match.product}${where}: reason added and verified — “${item.reason}”`);
+        } else {
+          lines.push(`• ${match.product}${where}: already listed, unchanged`);
+        }
+        continue;
+      }
+      await prisma.comingSoonItem.create({
+        data: { auditId: audit.id, product: item.product, reason: item.reason, verified: item.verified },
+      });
+      lines.push(
+        item.verified
+          ? `• ${item.product}${where}: added, verified — reason “${item.reason}”`
+          : `• ${item.product}${where}: added, NOT verified — the paste gives no reason for the label`,
+      );
+    }
+    replies.push(info(`Coming soon\n${lines.join("\n")}`));
+  }
 }
 
 async function moveTo(audit: AuditRef, target: AuditStage, actor: Actor, replies: ChatReply[], comment?: string) {
@@ -185,7 +186,9 @@ async function moveTo(audit: AuditRef, target: AuditStage, actor: Actor, replies
     if (audit.stage !== "READY_FOR_BREE")
       return replies.push(err(`${audit.siteName} must be in Ready for Bree before approval (now: ${STAGE_LABEL[audit.stage]}).`));
     const res = await approveAudit(audit.id, actor, comment ?? "");
-    return replies.push(res.ok ? ok(`${audit.siteName} approved by ${actorName(actor)} and moved to History.`, { href: "/history", linkLabel: "Open History" }) : err(res.error));
+    return replies.push(
+      res.ok ? ok(`${audit.siteName} approved by ${actorName(actor)} and moved to History.`, { href: "/history", linkLabel: "Open History" }) : err(res.error),
+    );
   }
 
   if (target === "READY_FOR_BREE") {
@@ -220,23 +223,22 @@ async function moveTo(audit: AuditRef, target: AuditStage, actor: Actor, replies
   replies.push(ok(`${audit.siteName}: ${STAGE_LABEL[audit.stage]} → ${STAGE_LABEL[target]}.`));
 }
 
-async function runLine(line: string, ctxId: string | undefined, actor: Actor, replies: ChatReply[]): Promise<string | undefined> {
-  const cmd = parseCommand(line);
-  if (!cmd) {
-    replies.push(err(`I didn't understand “${line}”. Type help for commands.`));
-    return;
-  }
+async function runCommand(
+  cmd: Command,
+  line: string,
+  ctxId: string | undefined,
+  actor: Actor,
+  replies: ChatReply[],
+  remember: (id: string) => Promise<void>,
+): Promise<string | undefined> {
   if (cmd.kind === "help") {
     replies.push(info(HELP_TEXT));
     return;
   }
   if (cmd.kind === "create") {
     if (actor.role !== "PM") return void replies.push(err("Switch to Technical PM to create audits."));
-    if (!cmd.siteName || !cmd.url) return void replies.push(err("Give a site name and URL, e.g. create audit Acme Health https://acme.com"));
-    const res = await createAudit(
-      { siteName: cmd.siteName, url: cmd.url, clientName: cmd.clientName ?? "", assignedPm: cmd.assignedPm ?? "", auditDate: new Date().toISOString().slice(0, 10) },
-      actor,
-    );
+    if (!cmd.siteName || !cmd.url) return void replies.push(err("Give a client name and URL, e.g. create audit Acme Health https://acme.com"));
+    const res = await createAudit({ siteName: cmd.siteName, url: cmd.url, auditDate: new Date().toISOString().slice(0, 10) }, actor);
     if (!res.ok) return void replies.push(err(res.error));
     replies.push(ok(`Created audit ${cmd.siteName} (${cmd.url}) in In audit.`, { href: `/audits/${res.id}`, linkLabel: "Open audit" }));
     return res.id;
@@ -245,6 +247,7 @@ async function runLine(line: string, ctxId: string | undefined, actor: Actor, re
   const found = await resolveAudit(cmd.rest + " " + line, {}, ctxId);
   if ("error" in found) return void replies.push(err(found.error));
   const audit = found.audit;
+  await remember(audit.id);
 
   if (cmd.kind === "approve") return void (await moveTo(audit, "APPROVED", actor, replies, cmd.comment));
   if (cmd.kind === "move") return void (await moveTo(audit, cmd.target, actor, replies));
@@ -272,40 +275,51 @@ async function runLine(line: string, ctxId: string | undefined, actor: Actor, re
   return audit.id;
 }
 
-export async function runChat(input: string, ctx: { auditId?: string }, actor: Actor): Promise<ChatResult> {
-  const text = input.trim();
+async function handle(text: string, ctx: { auditId?: string }, actor: Actor): Promise<ChatResult> {
   const replies: ChatReply[] = [];
-  if (!text) return { replies };
-
   const touched = new Map<string, AuditStage>();
-  const remember = async (id?: string) => {
-    if (!id || touched.has(id)) return;
+  const remember = async (id: string) => {
+    if (touched.has(id)) return;
     const a = await prisma.audit.findUnique({ where: { id }, select: { stage: true } });
     if (a) touched.set(id, a.stage);
   };
   let focus: string | undefined;
 
-  if (looksLikeReport(text)) {
-    const report = parseReport(text);
-    const found = await resolveAudit(text, { site: report.site, url: report.url }, ctx.auditId);
-    if ("error" in found) return { replies: [err(found.error)] };
-    if (actor.role !== "PM") return { replies: [err("Switch to Technical PM to apply an audit result.")] };
-    if (found.audit.stage === "APPROVED") return { replies: [err(`${found.audit.siteName} is approved and read-only.`)] };
-    await remember(found.audit.id);
-    await applyReport(found.audit, report.checks, actor, replies);
-    focus = found.audit.id;
-  } else {
-    for (const line of text.split(/\n|;/).map((l) => l.trim()).filter(Boolean)) {
-      if (!/^(create|new|add)\b/i.test(line)) {
-        const peek = parseCommand(line);
-        if (peek?.kind === "mark") {
-          const r = await resolveAudit(peek.rest + " " + line, {}, ctx.auditId);
-          if ("audit" in r) await remember(r.audit.id);
-        }
-      }
-      const id = await runLine(line, ctx.auditId, actor, replies);
+  const commands = parseCommands(text);
+  if (commands) {
+    const lines = text.split(/\n|;/).map((l) => l.trim()).filter(Boolean);
+    for (let i = 0; i < commands.length; i++) {
+      const id = await runCommand(commands[i], lines[i], ctx.auditId, actor, replies, remember);
       focus = id ?? focus;
     }
+  } else if (!looksLikeAuditPaste(text)) {
+    return {
+      replies: [err(`I didn't understand “${text.slice(0, 120)}”. Paste the full audit result, or type help (ayuda) for commands.`)],
+    };
+  } else {
+    if (actor.role !== "PM") return { replies: [err("Switch to Technical PM to apply an audit result.")] };
+    const found = await resolveAudit(text, siteHints(text), ctx.auditId);
+    if ("error" in found) return { replies: [err(found.error)] };
+    const audit = found.audit;
+    if (audit.stage === "APPROVED") return { replies: [err(`${audit.siteName} is approved and read-only.`)] };
+    if (!modelConfigured()) {
+      return {
+        replies: [
+          err(
+            `I can't read pasted audits yet: ${MODEL_KEY_ENV} is not set on the server, and I won't guess results from keywords. Nothing was changed.\n\nAdd ${MODEL_KEY_ENV} in Vercel → Project → Settings → Environment Variables and redeploy. Until then, tick Desktop / Mobile on the card, or use a command such as “mark 04 fail mobile: dosing in FAQ” / “marcar 04 falla móvil: dosis en FAQ”.`,
+          ),
+        ],
+      };
+    }
+    let raw;
+    try {
+      raw = await interpretWithModel(text);
+    } catch (e) {
+      return { replies: [err(`I couldn't read that paste (${(e as Error).message}). Nothing was changed. Try again in a moment.`)] };
+    }
+    await remember(audit.id);
+    await applyInterpretation(audit, validateInterpretation(text, raw), replies);
+    focus = audit.id;
   }
 
   for (const [id, before] of touched) {
@@ -319,4 +333,25 @@ export async function runChat(input: string, ctx: { auditId?: string }, actor: A
 
   refresh();
   return { replies, auditId: focus };
+}
+
+/** Never throws: the chat panel always gets replies it can render. */
+export async function runChat(input: unknown, ctx: { auditId?: string }, actor: Actor): Promise<ChatResult> {
+  const text = typeof input === "string" ? input.replace(/\r/g, "").trim() : "";
+  if (!text) return { replies: [] };
+  if (text.length > MAX_INPUT) {
+    return { replies: [err(`That message is too long (${text.length.toLocaleString("en-US")} characters, max ${MAX_INPUT.toLocaleString("en-US")}). Paste the results section only.`)] };
+  }
+  const safeActor: Actor = {
+    name: typeof actor?.name === "string" ? actor.name : "",
+    role: actor?.role === "APPROVER" ? "APPROVER" : "PM",
+  };
+  try {
+    return await handle(text, { auditId: typeof ctx?.auditId === "string" ? ctx.auditId : undefined }, safeActor);
+  } catch (e) {
+    console.error("chat failed", e);
+    return {
+      replies: [err(`Something went wrong while handling that message (${(e as Error).message?.slice(0, 160) || "server error"}). Check the card before retrying.`)],
+    };
+  }
 }

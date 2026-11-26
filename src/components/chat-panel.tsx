@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { Component, useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { runChat, type ChatReply } from "@/lib/chat/actions";
 import { useActor } from "./role-provider";
 
@@ -13,10 +13,73 @@ const WELCOME: Message = {
   id: "welcome",
   from: "bot",
   tone: "info",
-  text: "Paste a Lovable audit result (01–12 with PASS/FAIL) and I’ll fill the open audit. Or type a command — try “help”.",
+  text: "Paste the full audit result (English or Spanish) and I’ll apply only the checks it clearly reports. Or type a command — try “help”.",
 };
 
+function isMessage(m: unknown): m is Message {
+  if (!m || typeof m !== "object") return false;
+  const x = m as Record<string, unknown>;
+  return typeof x.id === "string" && typeof x.text === "string" && (x.from === "user" || x.from === "bot");
+}
+
+function loadSaved(): { open: boolean; messages: Message[] } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as { open?: unknown; messages?: unknown };
+    const messages = Array.isArray(saved.messages) ? saved.messages.filter(isMessage) : [];
+    return { open: saved.open === true, messages };
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+    return null;
+  }
+}
+
+class ChatBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    console.error("Audit chat crashed", error);
+  }
+  reset = () => {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
+    this.setState({ failed: false });
+  };
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <aside className="chat" data-testid="chat-panel" aria-label="Audit chat">
+        <div className="chat-head">
+          <div className="chat-title">Audit chat</div>
+        </div>
+        <div className="chat-list" data-testid="chat-list">
+          <div className="msg msg-bot tone-error" data-testid="chat-recovered">
+            <div className="msg-text">The chat hit an error and stopped. Your audits weren’t affected.</div>
+          </div>
+        </div>
+        <div className="chat-input">
+          <button className="btn btn-primary" onClick={this.reset} data-testid="chat-reset">
+            Reset chat
+          </button>
+        </div>
+      </aside>
+    );
+  }
+}
+
 export function ChatPanel() {
+  return (
+    <ChatBoundary>
+      <ChatPanelInner />
+    </ChatBoundary>
+  );
+}
+
+function ChatPanelInner() {
   const pathname = usePathname();
   const router = useRouter();
   const actor = useActor();
@@ -28,14 +91,9 @@ export function ChatPanel() {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as { open?: boolean; messages?: Message[] };
-        if (saved.messages?.length) setMessages(saved.messages);
-        if (saved.open) setOpen(true);
-      }
-    } catch {}
+    const saved = loadSaved();
+    if (saved?.messages.length) setMessages(saved.messages);
+    if (saved?.open) setOpen(true);
   }, []);
 
   useEffect(() => {
@@ -52,16 +110,31 @@ export function ChatPanel() {
     setMessages((m) => [...m, userMsg]);
     setInput("");
     start(async () => {
+      let replies: ChatReply[];
       try {
         const res = await runChat(text, { auditId }, actor);
-        setMessages((m) => [
-          ...m,
-          ...res.replies.map((r, i) => ({ id: `b${Date.now()}-${i}`, from: "bot" as const, ...r })),
-        ]);
-        router.refresh();
+        replies = Array.isArray(res?.replies) ? res.replies : [];
       } catch (e) {
-        setMessages((m) => [...m, { id: `e${Date.now()}`, from: "bot", tone: "error", text: `Something went wrong: ${(e as Error).message}` }]);
+        const reason = e instanceof Error && e.message ? e.message : "network error";
+        replies = [{ tone: "error", text: `The message didn’t go through (${reason.slice(0, 160)}). Nothing was changed. Reload the page if this keeps happening.` }];
       }
+      const stamp = Date.now();
+      setMessages((m) => [
+        ...m,
+        ...replies
+          .filter((r) => r && typeof r.text === "string")
+          .map((r, i) => ({
+            id: `b${stamp}-${i}`,
+            from: "bot" as const,
+            text: r.text,
+            tone: r.tone,
+            href: typeof r.href === "string" ? r.href : undefined,
+            linkLabel: r.linkLabel,
+          })),
+      ]);
+      try {
+        router.refresh();
+      } catch {}
     });
   };
 

@@ -27,12 +27,12 @@ export async function getInbox() {
   const [awaiting, changes] = await Promise.all([
     prisma.audit.findMany({
       where: { stage: "READY_FOR_BREE" },
-      select: { id: true, siteName: true, clientName: true, submittedAt: true, assignedPm: true },
+      select: { id: true, siteName: true, url: true, submittedAt: true },
       orderBy: { submittedAt: "asc" },
     }),
     prisma.audit.findMany({
       where: { changesRequested: true, stage: "FIX_RETEST" },
-      select: { id: true, siteName: true, clientName: true, assignedPm: true, updatedAt: true },
+      select: { id: true, siteName: true, url: true, updatedAt: true },
       orderBy: { updatedAt: "desc" },
     }),
   ]);
@@ -52,13 +52,12 @@ export async function getHistory(filters: { q?: string; client?: string; from?: 
       OR: [
         { siteName: { contains: filters.q, mode: "insensitive" } },
         { url: { contains: filters.q, mode: "insensitive" } },
-        { clientName: { contains: filters.q, mode: "insensitive" } },
         { approvedBy: { contains: filters.q, mode: "insensitive" } },
         { approvalComment: { contains: filters.q, mode: "insensitive" } },
       ],
     });
   }
-  if (filters.client) and.push({ clientName: filters.client });
+  if (filters.client) and.push({ siteName: filters.client });
   if (filters.from) and.push({ approvedAt: { gte: new Date(`${filters.from}T00:00:00.000Z`) } });
   if (filters.to) and.push({ approvedAt: { lte: new Date(`${filters.to}T23:59:59.999Z`) } });
   if (and.length) where.AND = and;
@@ -71,10 +70,10 @@ export async function getHistory(filters: { q?: string; client?: string; from?: 
     }),
     prisma.audit.findMany({
       where: { stage: "APPROVED" },
-      distinct: ["clientName"],
-      select: { clientName: true },
-      orderBy: { clientName: "asc" },
+      distinct: ["siteName"],
+      select: { siteName: true },
+      orderBy: { siteName: "asc" },
     }),
   ]);
-  return { audits, clients: clients.map((c) => c.clientName) };
+  return { audits, clients: clients.map((c) => c.siteName) };
 }

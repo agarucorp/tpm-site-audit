@@ -13,7 +13,7 @@ function hash(s: string) {
 }
 
 export function AuditCard({ audit }: { audit: BoardAudit }) {
-  const h = hash(audit.clientName || audit.siteName);
+  const h = hash(audit.siteName);
   const color = STICKY_COLORS[h % STICKY_COLORS.length];
   const rotation = ((hash(audit.id) % 7) - 3) * 0.45;
   const done = completedCount(audit.checks);
@@ -37,13 +37,12 @@ export function AuditCard({ audit }: { audit: BoardAudit }) {
       </div>
       <div className="card-sub muted">
         <span>{hostOf(audit.url)}</span>
-        {audit.clientName !== audit.siteName && <span> · {audit.clientName}</span>}
       </div>
       <div className="progress" aria-label={`${done} of ${CHECK_COUNT} checks complete`}>
         <span style={{ width: `${pct}%` }} className={done === CHECK_COUNT ? "full" : ""} />
       </div>
       <div className="card-meta">
-        <span className="muted small">PM {audit.assignedPm}</span>
+        <span className="muted small">{audit.stage === "APPROVED" ? "Approved" : "Audit date"}</span>
         <span className="muted small">{formatDate(audit.stage === "APPROVED" ? audit.approvedAt : audit.auditDate)}</span>
       </div>
       {(failing > 0 || retest > 0 || audit.changesRequested) && (

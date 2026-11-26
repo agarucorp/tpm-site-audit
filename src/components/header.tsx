@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { Inbox } from "@/lib/queries";
 import { useRole } from "./role-provider";
-import { formatDate } from "@/lib/format";
+import { formatDate, hostOf } from "@/lib/format";
 import { AuditPromptButton } from "./audit-prompt";
 
 export function Header({ inbox }: { inbox: Inbox }) {
@@ -93,7 +93,7 @@ export function Header({ inbox }: { inbox: Inbox }) {
                       <Link href={`/audits/${a.id}`} onClick={() => setOpen(false)}>
                         <span className="inbox-site">{a.siteName}</span>
                         <span className="muted">
-                          {a.clientName} · PM {a.assignedPm}
+                          {hostOf(a.url)}
                           {"submittedAt" in a && a.submittedAt ? ` · submitted ${formatDate(a.submittedAt)}` : ""}
                         </span>
                       </Link>

@@ -7,26 +7,24 @@ import { passBlocker } from "./workflow";
 import { actorName, assertEditable, refresh, syncStage, type Actor } from "./stage";
 
 export type { Actor };
-export type ActionResult = { ok: true } | { ok: false; error: string };
+export type ActionResult = { ok: true; notice?: string } | { ok: false; error: string };
 
 const ok: ActionResult = { ok: true };
 const fail = (error: string): ActionResult => ({ ok: false, error });
 
 export async function createAudit(
-  input: { siteName: string; clientName: string; url: string; auditDate: string; assignedPm: string },
+  input: { siteName: string; url: string; auditDate: string },
   actor: Actor,
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const siteName = input.siteName.trim();
   const url = input.url.trim();
-  if (!siteName) return fail("Site name is required.") as { ok: false; error: string };
+  if (!siteName) return fail("Client is required.") as { ok: false; error: string };
   if (!url) return fail("URL is required.") as { ok: false; error: string };
   const audit = await prisma.audit.create({
     data: {
       siteName,
-      clientName: input.clientName.trim() || siteName,
       url,
       auditDate: input.auditDate ? new Date(input.auditDate) : new Date(),
-      assignedPm: input.assignedPm.trim() || actorName(actor),
       checks: { create: CHECKS.map((c) => ({ checkNumber: c.number })) },
       events: {
         create: { type: "CREATED", actorName: actorName(actor), actorRole: actor.role, toStage: "IN_AUDIT" },
@@ -39,19 +37,17 @@ export async function createAudit(
 
 export async function updateAuditDetails(
   auditId: string,
-  input: { siteName: string; clientName: string; url: string; auditDate: string; assignedPm: string },
+  input: { siteName: string; url: string; auditDate: string },
 ): Promise<ActionResult> {
   const err = await assertEditable(auditId);
   if (err) return fail(err);
-  if (!input.siteName.trim() || !input.url.trim()) return fail("Site name and URL are required.");
+  if (!input.siteName.trim() || !input.url.trim()) return fail("Client and URL are required.");
   await prisma.audit.update({
     where: { id: auditId },
     data: {
       siteName: input.siteName.trim(),
-      clientName: input.clientName.trim() || input.siteName.trim(),
       url: input.url.trim(),
       auditDate: new Date(input.auditDate),
-      assignedPm: input.assignedPm.trim(),
     },
   });
   refresh();
@@ -96,8 +92,18 @@ export async function updateCheck(
   if (patch.screenshotLinks) {
     next.screenshotLinks = patch.screenshotLinks.map((l) => l.trim()).filter(Boolean);
   }
-  const devicesChanged = patch.desktopPass === false || patch.mobilePass === false;
-  if (next.status === "PASS" && devicesChanged && patch.status === undefined) next.status = "RETEST";
+  // Ticking a device box drives the status: both done -> Pass, any box unticked -> off Pass.
+  let notice: string | undefined;
+  const devicesTouched = patch.desktopPass !== undefined || patch.mobilePass !== undefined;
+  if (devicesTouched && patch.status === undefined) {
+    if (next.desktopPass && next.mobilePass) {
+      const blocker = passBlocker(checkNumber, next, coverage, comingSoon);
+      if (blocker) {
+        if (next.status === "PASS") next.status = "RETEST";
+        notice = `Both devices are done, but the check can't pass yet. ${blocker}`;
+      } else next.status = "PASS";
+    } else if (next.status === "PASS") next.status = "RETEST";
+  }
 
   if (next.status === "PASS") {
     const blocker = passBlocker(checkNumber, next, coverage, comingSoon);
@@ -116,7 +122,7 @@ export async function updateCheck(
   await prisma.checkResult.update({ where: { id: check.id }, data });
   await syncStage(auditId, actor);
   refresh();
-  return ok;
+  return notice ? { ok: true, notice } : ok;
 }
 
 export async function addCoverage(

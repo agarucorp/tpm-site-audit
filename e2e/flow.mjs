@@ -9,7 +9,7 @@ const OUT = process.env.SHOT_DIR ?? "e2e/output";
 mkdirSync(OUT, { recursive: true });
 
 const site = `Test Clinic ${Date.now().toString().slice(-5)}`;
-const client = "E2E Health Co";
+const client = site;
 
 const log = (m) => console.log(`✓ ${m}`);
 async function until(fn, msg, timeout = 10000) {
@@ -47,10 +47,12 @@ async function passCheck(code) {
     await mobile.check();
     await until(() => mobile.isChecked().then((v) => v && mobile.isEnabled()), `${code} mobile`);
   }
+  await until(() => status.isEnabled(), `${code} saved`);
   if ((await status.inputValue()) !== "PASS") {
+    // Both boxes were already ticked before a prerequisite (coverage) was met.
     await status.selectOption("PASS");
-    await until(async () => (await status.inputValue()) === "PASS" && (await status.isEnabled()), `${code} pass`);
   }
+  await until(async () => (await status.inputValue()) === "PASS" && (await status.isEnabled()), `${code} pass`);
 }
 
 try {
@@ -74,13 +76,17 @@ try {
 
   // Create
   await page.getByTestId("new-audit").click();
+  const modal = page.locator(".modal");
+  if ((await modal.locator("input").count()) !== 3) throw new Error("Create form should only ask Client, URL and date");
+  if (await modal.getByText(/Assigned PM|Site name/).count()) throw new Error("Create form still asks for PM or a second name");
+  await modal.getByText("Client", { exact: true }).waitFor();
   await page.locator('input[name="siteName"]').fill(site);
-  await page.locator('input[name="clientName"]').fill(client);
   await page.locator('input[name="url"]').fill("https://testclinic.example.com");
   await page.getByRole("button", { name: "Create audit" }).click();
   await page.waitForURL(/\/audits\//);
   await waitStage("IN_AUDIT");
-  log("audit created in In audit");
+  if (await page.getByTestId("audit-detail").getByText("Assigned PM").count()) throw new Error("Detail still shows Assigned PM");
+  log("audit created in In audit (one Client field, no PM)");
 
   await page.getByTestId("audit-prompt-detail").click();
   const detailPrompt = await page.getByTestId("prompt-text").inputValue();
@@ -88,6 +94,21 @@ try {
     throw new Error("Detail prompt should be prefilled with site name and URL");
   await page.keyboard.press("Escape");
   log("detail audit prompt prefilled with site name + URL");
+
+  // Checkboxes drive the status: both devices done -> Pass, unticking -> off Pass
+  await page.getByTestId("check-02-desktop").check();
+  await until(() => page.getByTestId("check-02-desktop").isChecked(), "02 desktop");
+  if ((await page.getByTestId("check-02-status").inputValue()) === "PASS") throw new Error("One device must not pass the check");
+  await page.getByTestId("check-02-mobile").check();
+  await until(async () => (await page.getByTestId("check-02-status").inputValue()) === "PASS", "02 auto pass");
+  await page.getByText("Homepage continuity").first().scrollIntoViewIfNeeded();
+  await page.evaluate(() => window.scrollBy(0, -120));
+  await page.screenshot({ path: `${OUT}/card-checkboxes.png` });
+  await page.getByTestId("check-02-mobile").uncheck();
+  await until(async () => (await page.getByTestId("check-02-status").inputValue()) === "RETEST", "02 off pass");
+  await page.getByTestId("check-02-desktop").uncheck();
+  await until(() => page.getByTestId("check-02-desktop").isChecked().then((v) => !v), "02 desktop off");
+  log("checkboxes: Desktop + Mobile done -> Pass; unticking -> Retest");
 
   // Guard: Pass without both devices is rejected
   await page.getByTestId("check-02-status").selectOption("PASS");
@@ -99,8 +120,8 @@ try {
   await until(() => page.getByTestId("check-01-desktop").isChecked(), "01 desktop");
   await page.getByTestId("check-01-mobile").check();
   await until(() => page.getByTestId("check-01-mobile").isChecked(), "01 mobile");
-  await page.getByTestId("check-01-status").selectOption("PASS");
   await page.getByText("100% of buttons must be clicked").first().waitFor();
+  if ((await page.getByTestId("check-01-status").inputValue()) === "PASS") throw new Error("01 must not pass without coverage");
   log("check 01 blocked until coverage is documented");
 
   // Step 01 coverage
@@ -216,11 +237,13 @@ try {
   await row.getByText("Hero image still looks AI-generated").waitFor();
   await row.getByText("Approved. Tirzepatide").waitFor();
   await page.screenshot({ path: `${OUT}/history.png` });
-  log("history: search, client and date filters, full checklist + comments");
+  if (await page.locator("main").getByText("Assigned PM").count()) throw new Error("History still shows Assigned PM");
+  log("history: search, client and date filters, full checklist + comments (no PM)");
 
   await page.goto(BASE);
   await page.getByTestId("column-APPROVED").getByText(site).waitFor();
-  log("card shows in Approved column");
+  if (await page.getByTestId("audit-card").filter({ hasText: /\bPM\b/ }).count()) throw new Error("Cards still show the PM");
+  log("card shows in Approved column; cards show no PM");
 
   // Detail screenshot of the seeded in-progress audit
   await setRole("PM", "Alex Rivera");
@@ -232,71 +255,102 @@ try {
   await page.screenshot({ path: `${OUT}/audit-prompt-modal.png` });
   await page.keyboard.press("Escape");
 
-  // Chat: paste a Lovable result into the open audit (Lumina, no site named)
-  await page.getByTestId("chat-open").click();
-  const report = [
-    "01 Buttons + CTAs: PASS — all buttons, menus, footer links, forms and checkout steps reach the right page. 100% coverage.",
-    "02 Homepage continuity: PASS",
-    "03 Product packaging: PASS",
-    "04 No dosing information: FAIL — /faq, accordion \"How much do I take?\" shows 0.25mg (mobile only).",
-    "05 Durations + checkout: PASS",
-    "06 Checkout confirmation: PASS",
-    "07 HRT intake first: PASS",
-    "08 Labs: PASS",
-    "09 LegitScript: PASS",
-    "10 Business details + legal: PASS",
-    "11 Imagery: PASS",
-    "12 Coming soon: PASS",
-    "- Tirzepatide — /weight-loss",
-    "- NAD+ injections — /wellness",
-  ].join("\n");
-  await page.getByTestId("chat-input").fill(report);
+  // Chat: a corrupted saved history must not crash the app
+  await page.evaluate(() => localStorage.setItem("tpm-site-audit:chat", '{"open":true,"messages":[{"bad":1},null,"x"]'));
+  await page.reload();
+  await page.getByTestId("audit-detail").waitFor();
+  if (!(await page.getByTestId("chat-panel").count())) await page.getByTestId("chat-open").click();
+  await page.getByTestId("chat-input").fill("hola");
   await page.getByTestId("chat-send").click();
-  await page.getByTestId("chat-list").getByText("applied 12 check(s)").waitFor();
+  await page.getByTestId("chat-list").getByText("I didn't understand").waitFor();
+  await page.getByTestId("chat-input").fill("x".repeat(41000));
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("That message is too long").waitFor();
+  if (await page.getByTestId("error-page").count()) throw new Error("App showed the error screen");
+  log("chat: bad saved history, unknown text and oversized input are answered, no crash");
+
+  // Chat: a Spanish paste full of "pass"/"fail" words must not flip any checkbox
+  const snapshot = async () => {
+    const out = [];
+    for (let n = 1; n <= 12; n++) {
+      const code = String(n).padStart(2, "0");
+      out.push([
+        await page.getByTestId(`check-${code}-desktop`).isChecked(),
+        await page.getByTestId(`check-${code}-mobile`).isChecked(),
+        await page.getByTestId(`check-${code}-status`).inputValue(),
+      ]);
+    }
+    return JSON.stringify(out);
+  };
+  const before = await snapshot();
+  const spanishPaste = [
+    "Instrucciones: para cada check reportá PASS o FAIL. No pases un check si queda información de dosis.",
+    "01 Botones + CTAs: pass? todavía no terminé de revisar el menú.",
+    "02 Continuidad: no sé si pasa o falla, lo veo mañana.",
+    "04 Sin dosis — do not pass hasta revisar el FAQ.",
+    "09 LegitScript: fail / pass (pendiente)",
+    "12 Próximamente: Tirzepatide — /weight-loss",
+  ].join("\n");
+  await page.getByTestId("chat-input").fill(spanishPaste);
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("OPENAI_API_KEY is not set").waitFor();
+  await page.waitForTimeout(800);
+  if ((await snapshot()) !== before) throw new Error("Spanish paste changed checkboxes from keywords");
+  log("chat: Spanish paste with pass/fail words changed nothing and named the missing OPENAI_API_KEY");
+
+  // Chat: a clear per-check command updates exactly that checkbox
+  const desktop04 = await page.getByTestId("check-04-desktop").isChecked();
+  await page.getByTestId("check-04-mobile").check();
+  await until(() => page.getByTestId("check-04-mobile").isChecked(), "04 mobile on");
+  await page.getByTestId("chat-input").fill("marcar 04 falla móvil: tabla de dosis en /faq");
+  await page.getByTestId("chat-send").click();
+  await page.getByTestId("chat-list").getByText("04 No dosing info → Fail").waitFor();
   await until(
     async () =>
-      (await page.getByTestId("check-04-status").inputValue()) === "FAIL" &&
-      (await page.getByTestId("check-04-desktop").isChecked()) &&
       !(await page.getByTestId("check-04-mobile").isChecked()) &&
-      (await page.getByTestId("check-09-status").inputValue()) === "PASS",
-    "chat: 04 desktop pass / mobile fail, 09 pass",
+      (await page.getByTestId("check-04-desktop").isChecked()) === desktop04 &&
+      (await page.getByTestId("check-04-status").inputValue()) === "FAIL",
+    "04 mobile unticked, desktop unchanged, Fail",
   );
-  await waitStage("FIX_RETEST");
-  log("chat: pasted report applied to open audit (04 fails on mobile only, others pass)");
+  log("chat: 'marcar 04 falla móvil' unticked 04 Mobile only and set Fail");
 
   await page.getByTestId("chat-input").fill("mark 04 pass");
   await page.getByTestId("chat-send").click();
-  await page.getByTestId("chat-list").getByText("Fix & retest → Ready for Bree").waitFor();
-  await waitStage("READY_FOR_BREE");
+  await until(
+    async () =>
+      (await page.getByTestId("check-04-mobile").isChecked()) &&
+      (await page.getByTestId("check-04-desktop").isChecked()) &&
+      (await page.getByTestId("check-04-status").inputValue()) === "PASS",
+    "04 pass via chat",
+  );
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `${OUT}/chat.png` });
-  log("chat: 'mark 04 pass' -> all complete -> Ready for Bree");
+  log("chat: 'mark 04 pass' ticked both devices and set Pass");
 
-  await page.getByTestId("chat-input").fill("create audit Chat Clinic https://chatclinic.example.com client Chat Co");
+  await page.getByTestId("chat-input").fill("crear auditoría Chat Clinic https://chatclinic.example.com");
   await page.getByTestId("chat-send").click();
   await page.getByTestId("chat-list").getByText("Created audit Chat Clinic").waitFor();
   await page.getByTestId("chat-input").fill("mark 03 fail desktop: vial shown for a cream on Chat Clinic");
   await page.getByTestId("chat-send").click();
   await page.getByTestId("chat-list").getByText("Card moved: Chat Clinic — In audit → Fix & retest").waitFor();
-  await page.getByTestId("chat-input").fill("move Chat Clinic to in audit");
+  await page.getByTestId("chat-input").fill("mover Chat Clinic a en auditoría");
   await page.getByTestId("chat-send").click();
   await page.getByTestId("chat-list").getByText("Chat Clinic: Fix & retest → In audit").waitFor();
-  log("chat: create audit, mark check on named site, move card");
+  log("chat: create audit (Spanish), mark check on named site, move card (Spanish)");
 
   await setRole("APPROVER", "Bree");
-  await page.getByTestId("chat-input").fill("approve Lumina Wellness: verified via chat");
+  await page.getByTestId("chat-input").fill("aprobar Harbor Hormone Health: verificado por chat");
   await page.getByTestId("chat-send").click();
-  await page.getByTestId("chat-list").getByText("Lumina Wellness approved by Bree").waitFor();
-  await waitStage("APPROVED");
-  log("chat: approver 'approve <site>' -> Approved");
+  await page.getByTestId("chat-list").getByText("Harbor Hormone Health approved by Bree").waitFor();
+  log("chat: approver 'aprobar <site>' -> Approved");
   await setRole("PM", "Alex Rivera");
-  await page.getByTestId("chat-input").fill("mark 04 fail mobile: dosing table still in FAQ image");
+  await page.getByTestId("chat-input").fill("mark 04 fail mobile: dosing table still in FAQ image on Harbor Hormone Health");
   await page.getByTestId("chat-send").click();
   await page.getByTestId("chat-list").getByText("approved and read-only").waitFor();
   await page.goto(BASE);
   await page.getByTestId("chat-input").fill("help");
   await page.getByTestId("chat-send").click();
-  await page.getByTestId("chat-list").getByText("Commands:").waitFor();
+  await page.getByTestId("chat-list").getByText("Commands (English or Spanish)").waitFor();
   await page.locator(".chat .icon-btn").click();
   await page.screenshot({ path: `${OUT}/board.png` });
 
